@@ -1,6 +1,7 @@
 // ============================================
-// AffordTrip API Server (Railway) v3.1.0
-// With price caching for scalability
+// AffordTrip API Server (Railway) v4.0.0
+// Powered by SerpApi Google Travel Explore
+// 1 API call = all destinations + prices
 // ============================================
 const express = require("express");
 const cors = require("cors");
@@ -8,31 +9,27 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
-const DUFFEL_API_KEY = process.env.DUFFEL_API_KEY;
+const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 // ============================================
-// PRICE CACHE — 1 hour TTL
+// CACHE — 6 hour TTL
 // ============================================
 const cache = {};
-const CACHE_TTL = 60 * 60 * 1000;
-
-function cacheKey(origin, dest, date, returnDate) {
-  return origin + "-" + dest + "-" + date + "-" + (returnDate || "ow");
-}
+const CACHE_TTL = 6 * 60 * 60 * 1000;
 
 function getCached(key) {
-  const entry = cache[key];
+  var entry = cache[key];
   if (!entry) return null;
   if (Date.now() - entry.time > CACHE_TTL) { delete cache[key]; return null; }
   return entry.data;
 }
 
 function setCache(key, data) {
-  cache[key] = { data, time: Date.now() };
+  cache[key] = { data: data, time: Date.now() };
   if (Math.random() < 0.01) {
-    const now = Date.now();
+    var now = Date.now();
     Object.keys(cache).forEach(function(k) { if (now - cache[k].time > CACHE_TTL) delete cache[k]; });
   }
 }
@@ -41,107 +38,99 @@ function setCache(key, data) {
 // Health Check
 // ============================================
 app.get("/", function(req, res) {
-  res.json({ status: "ok", service: "AffordTrip API", version: "3.1.0", platform: "railway", cacheSize: Object.keys(cache).length, timestamp: new Date().toISOString() });
+  res.json({ status: "ok", service: "AffordTrip API", version: "4.0.0", platform: "railway", engine: "serpapi", cacheSize: Object.keys(cache).length, timestamp: new Date().toISOString() });
 });
 app.get("/health", function(req, res) {
-  res.json({ status: "ok", version: "3.1.0", platform: "railway", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "4.0.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
 });
 
 // ============================================
-// Search Duffel with cache
+// MAIN ENDPOINT: Search flights to everywhere
+// GET /api/explore?origin=LHR&date=2026-07-15&return=2026-07-20&budget=1500&currency=GBP
+// Returns: all destinations with prices in ONE call
 // ============================================
-async function searchDuffel(origin, dest, date, returnDate) {
-  const key = cacheKey(origin, dest, date, returnDate);
-  const cached = getCached(key);
-  if (cached) return Object.assign({}, cached, { fromCache: true });
-
-  const slices = [{ origin: origin, destination: dest, departure_date: date }];
-  if (returnDate) slices.push({ origin: dest, destination: origin, departure_date: returnDate });
-
+app.get("/api/explore", async function(req, res) {
   try {
-    const r = await fetch("https://api.duffel.com/air/offer_requests", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + DUFFEL_API_KEY, "Content-Type": "application/json", "Duffel-Version": "v2" },
-      body: JSON.stringify({ data: { slices: slices, passengers: [{ type: "adult" }], cabin_class: "economy" } })
-    });
-    const data = await r.json();
+    var origin = req.query.origin;
+    var date = req.query.date;
+    var returnDate = req.query.return;
+    var budget = req.query.budget;
+    var currency = req.query.currency || "GBP";
 
-    if (data.errors) {
-      const result = { destination: dest, price: null, error: data.errors[0] && data.errors[0].message };
-      setCache(key, result);
-      return result;
+    if (!origin) return res.status(400).json({ error: "Missing origin" });
+
+    // Build cache key
+    var cacheK = "explore-" + origin + "-" + (date || "flex") + "-" + (returnDate || "flex") + "-" + currency;
+    var cached = getCached(cacheK);
+    if (cached) {
+      return res.json({ success: true, fromCache: true, destinations: cached });
     }
 
-    const offers = data.data && data.data.offers || [];
-    offers.sort(function(a, b) { return parseFloat(a.total_amount) - parseFloat(b.total_amount); });
-    const cheapest = offers[0];
-    const result = {
-      destination: dest,
-      price: cheapest ? parseFloat(cheapest.total_amount) : null,
-      currency: cheapest ? cheapest.total_currency : null,
-      airline: cheapest && cheapest.owner ? cheapest.owner.name : null,
-      isRoundTrip: slices.length > 1
-    };
-    setCache(key, result);
-    return result;
-  } catch (e) {
-    return { destination: dest, price: null, error: e.message };
-  }
-}
+    // Build SerpApi URL
+    var url = "https://serpapi.com/search.json?engine=google_travel_explore"
+      + "&departure_id=" + encodeURIComponent(origin)
+      + "&currency=" + encodeURIComponent(currency)
+      + "&hl=en&gl=uk"
+      + "&api_key=" + SERPAPI_KEY;
 
-// ============================================
-// Multi-destination flight prices (with cache)
-// ============================================
-app.post("/api/flights/multi", async function(req, res) {
-  try {
-    const body = req.body;
-    const origin = body.origin, destinations = body.destinations, date = body.date, returnDate = body.returnDate;
-    if (!origin || !destinations || !date) return res.status(400).json({ error: "Missing fields" });
+    // Add dates if provided
+    if (date) url += "&outbound_date=" + encodeURIComponent(date);
+    if (returnDate) url += "&return_date=" + encodeURIComponent(returnDate);
 
-    const batch = destinations.slice(0, 5);
-    const results = await Promise.allSettled(batch.map(function(dest) { return searchDuffel(origin, dest, date, returnDate); }));
-    const prices = results.map(function(r) { return r.status === "fulfilled" ? r.value : { destination: "unknown", price: null }; });
+    // Add budget filter if provided
+    if (budget) url += "&max_price=" + encodeURIComponent(budget);
 
-    res.json({ success: true, origin: origin, date: date, returnDate: returnDate || null, prices: prices });
-  } catch (err) {
-    res.status(500).json({ error: "Multi-search failed: " + err.message });
-  }
-});
+    var serpRes = await fetch(url);
+    var serpData = await serpRes.json();
 
-// ============================================
-// Single flight search
-// ============================================
-app.post("/api/flights", async function(req, res) {
-  try {
-    const body = req.body;
-    if (!body.origin || !body.destination || !body.date) return res.status(400).json({ error: "Missing fields" });
+    if (serpData.error) {
+      return res.status(502).json({ error: "SerpApi error: " + serpData.error });
+    }
 
-    const slices = [{ origin: body.origin, destination: body.destination, departure_date: body.date }];
-    if (body.returnDate) slices.push({ origin: body.destination, destination: body.origin, departure_date: body.returnDate });
-
-    const passengers = [];
-    for (var i = 0; i < (body.passengers || 1); i++) passengers.push({ type: "adult" });
-
-    const r = await fetch("https://api.duffel.com/air/offer_requests", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + DUFFEL_API_KEY, "Content-Type": "application/json", "Duffel-Version": "v2" },
-      body: JSON.stringify({ data: { slices: slices, passengers: passengers, cabin_class: body.cabin || "economy" } })
-    });
-    const data = await r.json();
-    if (data.errors) return res.status(502).json({ error: data.errors[0] && data.errors[0].message });
-
-    const offers = (data.data && data.data.offers || []).slice(0, 20).map(function(offer) {
-      var slice = offer.slices && offer.slices[0];
-      var segs = slice && slice.segments || [];
+    // Parse destinations
+    var destinations = (serpData.destinations || []).map(function(d) {
+      var cheapestFlight = d.flights && d.flights[0];
       return {
-        price: parseFloat(offer.total_amount), currency: offer.total_currency,
-        airline: offer.owner && offer.owner.name, stops: segs.length - 1, isRoundTrip: slices.length > 1
+        city: d.name,
+        country: d.country,
+        coordinates: d.gps_coordinates,
+        thumbnail: d.thumbnail,
+        flightPrice: cheapestFlight ? cheapestFlight.price : null,
+        currency: currency,
+        airline: cheapestFlight ? cheapestFlight.airline : null,
+        airlineCode: cheapestFlight ? cheapestFlight.airline_code : null,
+        stops: cheapestFlight ? cheapestFlight.number_of_stops : null,
+        duration: cheapestFlight ? cheapestFlight.duration : null,
+        departureAirport: cheapestFlight && cheapestFlight.departure_airport ? cheapestFlight.departure_airport.id : null,
+        arrivalAirport: cheapestFlight && cheapestFlight.arrival_airport ? cheapestFlight.arrival_airport.id : null,
+        startDate: d.start_date || null,
+        endDate: d.end_date || null,
+        googleFlightsLink: d.google_flights_link || null,
+        allFlights: (d.flights || []).map(function(f) {
+          return {
+            price: f.price,
+            airline: f.airline,
+            stops: f.number_of_stops,
+            duration: f.duration,
+            cheapest: f.cheapest_flight || false
+          };
+        })
       };
     });
-    offers.sort(function(a, b) { return a.price - b.price; });
-    res.json({ success: true, offers: offers });
+
+    // Cache results
+    setCache(cacheK, destinations);
+
+    res.json({
+      success: true,
+      fromCache: false,
+      origin: origin,
+      total: destinations.length,
+      destinations: destinations
+    });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Explore search failed: " + err.message });
   }
 });
 
@@ -196,5 +185,5 @@ app.get("/api/image", async function(req, res) {
 // Start
 // ============================================
 app.listen(PORT, function() {
-  console.log("AffordTrip API v3.1.0 running on port " + PORT);
+  console.log("AffordTrip API v4.0.0 (SerpApi) running on port " + PORT);
 });
