@@ -77,7 +77,17 @@ app.all("/api/explore", async function(req, res) {
     }
 
     // Parse destinations
-    var destinations = (serpData.destinations || []).map(function(d) {
+    var skipWords = ["national park", "state park", "resort", "mountain", "volcano", "canyon", "forest", "wilderness", "monument", "memorial", "scenic", "trail"];
+    var destinations = (serpData.destinations || []).filter(function(d) {
+      // Skip destinations without a name
+      if (!d.name && !d.title) return false;
+      var name = (d.name || d.title || "").toLowerCase();
+      // Skip non-city destinations (parks, resorts, etc.)
+      for (var i = 0; i < skipWords.length; i++) {
+        if (name.indexOf(skipWords[i]) >= 0) return false;
+      }
+      return true;
+    }).map(function(d) {
       // Flight price might be at different levels depending on the API response
       var flightPrice = null;
       var airline = null;
