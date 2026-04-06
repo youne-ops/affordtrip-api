@@ -53,7 +53,7 @@ app.all("/api/explore", async function(req, res) {
     var url = "https://serpapi.com/search.json?engine=google_travel_explore"
       + "&departure_id=" + encodeURIComponent(origin)
       + "&currency=" + encodeURIComponent(currency)
-      + "&hl=en"
+      + "&hl=en&type=1"
       + "&api_key=" + SERPAPI_KEY;
 
     // Add dates if provided
@@ -151,7 +151,7 @@ app.get("/api/explore/debug", async function(req, res) {
     var url = "https://serpapi.com/search.json?engine=google_travel_explore"
       + "&departure_id=" + encodeURIComponent(origin)
       + "&currency=" + encodeURIComponent(currency)
-      + "&hl=en"
+      + "&hl=en&type=1"
       + "&api_key=" + SERPAPI_KEY;
 
     var serpRes = await fetch(url);
