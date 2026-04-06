@@ -36,12 +36,12 @@ app.get("/health", function(req, res) {
 });
 
 // Main search endpoint
-app.get("/api/explore", async function(req, res) {
+app.all("/api/explore", async function(req, res) {
   try {
-    var origin = req.query.origin;
-    var date = req.query.date;
-    var returnDate = req.query.return;
-    var currency = req.query.currency || "GBP";
+    var origin = req.query.origin || (req.body && req.body.origin);
+    var date = req.query.date || (req.body && req.body.date);
+    var returnDate = req.query.return || (req.body && req.body.returnDate);
+    var currency = req.query.currency || (req.body && req.body.currency) || "GBP";
 
     if (!origin) return res.status(400).json({ error: "Missing origin" });
 
@@ -136,7 +136,7 @@ app.get("/api/explore", async function(req, res) {
 app.get("/api/explore/debug", async function(req, res) {
   try {
     var origin = req.query.origin || "LHR";
-    var currency = req.query.currency || "GBP";
+    var currency = req.query.currency || (req.body && req.body.currency) || "GBP";
 
     var url = "https://serpapi.com/search.json?engine=google_travel_explore"
       + "&departure_id=" + encodeURIComponent(origin)
