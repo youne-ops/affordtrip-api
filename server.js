@@ -1,8 +1,3 @@
-// ============================================
-// AffordTrip API Server (Railway) v4.0.0
-// Powered by SerpApi Google Travel Explore
-// 1 API call = all destinations + prices
-// ============================================
 const express = require("express");
 const cors = require("cors");
 const app = express();
@@ -13,9 +8,7 @@ app.use(express.json({ limit: "1mb" }));
 
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
-// ============================================
-// CACHE — 6 hour TTL
-// ============================================
+// Cache — 6 hour TTL
 const cache = {};
 const CACHE_TTL = 6 * 60 * 60 * 1000;
 
@@ -34,109 +27,132 @@ function setCache(key, data) {
   }
 }
 
-// ============================================
-// Health Check
-// ============================================
+// Health
 app.get("/", function(req, res) {
-  res.json({ status: "ok", service: "AffordTrip API", version: "4.0.0", platform: "railway", engine: "serpapi", cacheSize: Object.keys(cache).length, timestamp: new Date().toISOString() });
+  res.json({ status: "ok", version: "4.1.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
 });
 app.get("/health", function(req, res) {
-  res.json({ status: "ok", version: "4.0.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "4.1.0", cacheSize: Object.keys(cache).length });
 });
 
-// ============================================
-// MAIN ENDPOINT: Search flights to everywhere
-// GET /api/explore?origin=LHR&date=2026-07-15&return=2026-07-20&budget=1500&currency=GBP
-// Returns: all destinations with prices in ONE call
-// ============================================
+// Main search endpoint
 app.get("/api/explore", async function(req, res) {
   try {
     var origin = req.query.origin;
     var date = req.query.date;
     var returnDate = req.query.return;
-    var budget = req.query.budget;
     var currency = req.query.currency || "GBP";
 
     if (!origin) return res.status(400).json({ error: "Missing origin" });
 
-    // Build cache key
     var cacheK = "explore-" + origin + "-" + (date || "flex") + "-" + (returnDate || "flex") + "-" + currency;
     var cached = getCached(cacheK);
-    if (cached) {
-      return res.json({ success: true, fromCache: true, destinations: cached });
-    }
+    if (cached) return res.json({ success: true, fromCache: true, total: cached.length, destinations: cached });
 
-    // Build SerpApi URL
+    // Build SerpApi URL — no gl parameter, let Google auto-detect
     var url = "https://serpapi.com/search.json?engine=google_travel_explore"
       + "&departure_id=" + encodeURIComponent(origin)
       + "&currency=" + encodeURIComponent(currency)
-      + "&hl=en&gl=uk"
+      + "&hl=en"
       + "&api_key=" + SERPAPI_KEY;
 
     // Add dates if provided
     if (date) url += "&outbound_date=" + encodeURIComponent(date);
     if (returnDate) url += "&return_date=" + encodeURIComponent(returnDate);
 
-    // Add budget filter if provided
-    if (budget) url += "&max_price=" + encodeURIComponent(budget);
+    console.log("SerpApi URL:", url.replace(SERPAPI_KEY, "***"));
 
     var serpRes = await fetch(url);
     var serpData = await serpRes.json();
 
+    // Log raw response for debugging
+    console.log("SerpApi response keys:", Object.keys(serpData));
+    console.log("Destinations count:", serpData.destinations ? serpData.destinations.length : 0);
+    if (serpData.destinations && serpData.destinations[0]) {
+      console.log("First destination:", JSON.stringify(serpData.destinations[0]).substring(0, 500));
+    }
     if (serpData.error) {
+      console.log("SerpApi error:", serpData.error);
       return res.status(502).json({ error: "SerpApi error: " + serpData.error });
     }
 
     // Parse destinations
     var destinations = (serpData.destinations || []).map(function(d) {
-      var cheapestFlight = d.flights && d.flights[0];
+      // Flight price might be at different levels depending on the API response
+      var flightPrice = null;
+      var airline = null;
+      var airlineCode = null;
+      var stops = null;
+      var duration = null;
+      var depAirport = null;
+      var arrAirport = null;
+
+      // Check if flights array exists and has data
+      if (d.flights && d.flights.length > 0) {
+        var f = d.flights[0];
+        flightPrice = f.price;
+        airline = f.airline;
+        airlineCode = f.airline_code;
+        stops = f.number_of_stops;
+        duration = f.duration;
+        depAirport = f.departure_airport ? f.departure_airport.id : null;
+        arrAirport = f.arrival_airport ? f.arrival_airport.id : null;
+      }
+
+      // Also check for price at destination level (some responses have it here)
+      if (!flightPrice && d.flight_price) flightPrice = d.flight_price;
+      if (!flightPrice && d.extracted_flight_price) flightPrice = d.extracted_flight_price;
+      if (!flightPrice && d.price) flightPrice = d.price;
+
       return {
-        city: d.name,
+        city: d.name || d.title,
         country: d.country,
         coordinates: d.gps_coordinates,
         thumbnail: d.thumbnail,
-        flightPrice: cheapestFlight ? cheapestFlight.price : null,
+        flightPrice: flightPrice,
         currency: currency,
-        airline: cheapestFlight ? cheapestFlight.airline : null,
-        airlineCode: cheapestFlight ? cheapestFlight.airline_code : null,
-        stops: cheapestFlight ? cheapestFlight.number_of_stops : null,
-        duration: cheapestFlight ? cheapestFlight.duration : null,
-        departureAirport: cheapestFlight && cheapestFlight.departure_airport ? cheapestFlight.departure_airport.id : null,
-        arrivalAirport: cheapestFlight && cheapestFlight.arrival_airport ? cheapestFlight.arrival_airport.id : null,
+        airline: airline,
+        airlineCode: airlineCode,
+        stops: stops,
+        duration: duration,
+        departureAirport: depAirport,
+        arrivalAirport: arrAirport,
         startDate: d.start_date || null,
         endDate: d.end_date || null,
         googleFlightsLink: d.google_flights_link || null,
-        allFlights: (d.flights || []).map(function(f) {
-          return {
-            price: f.price,
-            airline: f.airline,
-            stops: f.number_of_stops,
-            duration: f.duration,
-            cheapest: f.cheapest_flight || false
-          };
-        })
+        description: d.description || null
       };
     });
 
-    // Cache results
     setCache(cacheK, destinations);
-
-    res.json({
-      success: true,
-      fromCache: false,
-      origin: origin,
-      total: destinations.length,
-      destinations: destinations
-    });
-
+    res.json({ success: true, fromCache: false, origin: origin, total: destinations.length, destinations: destinations });
   } catch (err) {
-    res.status(500).json({ error: "Explore search failed: " + err.message });
+    console.log("Explore error:", err);
+    res.status(500).json({ error: "Explore failed: " + err.message });
   }
 });
 
-// ============================================
+// Debug endpoint — returns raw SerpApi response
+app.get("/api/explore/debug", async function(req, res) {
+  try {
+    var origin = req.query.origin || "LHR";
+    var currency = req.query.currency || "GBP";
+
+    var url = "https://serpapi.com/search.json?engine=google_travel_explore"
+      + "&departure_id=" + encodeURIComponent(origin)
+      + "&currency=" + encodeURIComponent(currency)
+      + "&hl=en"
+      + "&api_key=" + SERPAPI_KEY;
+
+    var serpRes = await fetch(url);
+    var serpData = await serpRes.json();
+    res.json(serpData);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Hotel & Flight booking links
-// ============================================
 app.post("/api/hotels", function(req, res) {
   var city = req.body.city;
   if (!city) return res.status(400).json({ error: "Missing city" });
@@ -153,37 +169,22 @@ app.post("/api/book-flight", function(req, res) {
   }});
 });
 
-// ============================================
-// City Image (Wikipedia, cached)
-// ============================================
+// City Image
 app.get("/api/image", async function(req, res) {
   try {
     var city = req.query.city;
     if (!city) return res.status(400).json({ error: "Missing city" });
-
     var imgKey = "img-" + city;
     var cached = getCached(imgKey);
     if (cached && cached.url) return res.redirect(302, cached.url);
-
     var wikiRes = await fetch("https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(city), {
       headers: { "User-Agent": "AffordTrip/1.0" }
     });
     var wikiData = await wikiRes.json();
     var imageUrl = (wikiData.thumbnail && wikiData.thumbnail.source) || (wikiData.originalimage && wikiData.originalimage.source);
-
-    if (imageUrl) {
-      setCache(imgKey, { url: imageUrl });
-      return res.redirect(302, imageUrl);
-    }
+    if (imageUrl) { setCache(imgKey, { url: imageUrl }); return res.redirect(302, imageUrl); }
     res.status(404).json({ error: "No image" });
-  } catch (err) {
-    res.status(404).json({ error: "Failed" });
-  }
+  } catch (err) { res.status(404).json({ error: "Failed" }); }
 });
 
-// ============================================
-// Start
-// ============================================
-app.listen(PORT, function() {
-  console.log("AffordTrip API v4.0.0 (SerpApi) running on port " + PORT);
-});
+app.listen(PORT, function() { console.log("AffordTrip API v4.1.0 on port " + PORT); });
