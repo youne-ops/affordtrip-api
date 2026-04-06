@@ -43,10 +43,12 @@ app.all("/api/explore", async function(req, res) {
     var returnDate = req.query.return || (req.body && req.body.returnDate);
     var currency = req.query.currency || (req.body && req.body.currency) || "GBP";
     var stops = req.query.stops || (req.body && req.body.stops) || "any";
+    var vibe = req.query.vibe || (req.body && req.body.vibe) || "any";
+    var region = req.query.region || (req.body && req.body.region) || "any";
 
     if (!origin) return res.status(400).json({ error: "Missing origin" });
 
-    var cacheK = "explore-" + origin + "-" + (date || "flex") + "-" + (returnDate || "flex") + "-" + currency + "-" + stops;
+    var cacheK = "explore-" + origin + "-" + (date || "flex") + "-" + (returnDate || "flex") + "-" + currency + "-" + stops + "-" + vibe + "-" + region;
     var cached = getCached(cacheK);
     if (cached) return res.json({ success: true, fromCache: true, total: cached.length, destinations: cached });
 
@@ -64,6 +66,29 @@ app.all("/api/explore", async function(req, res) {
     // Add stops filter: 0=any, 1=nonstop, 2=1 stop or fewer
     if (stops === "direct") url += "&stops=1";
     else if (stops === "1stop") url += "&stops=2";
+
+    // Add interest/vibe filter
+    var vibeMap = {
+      "beach": "/m/0b3yr",
+      "outdoors": "/g/11bc58l13w",
+      "culture": "/m/03g3w",
+      "skiing": "/m/071k0"
+    };
+    if (vibe !== "any" && vibeMap[vibe]) {
+      url += "&interest=" + encodeURIComponent(vibeMap[vibe]);
+    }
+
+    // Add region filter
+    var regionMap = {
+      "europe": "/m/02j9z",
+      "asia": "/m/0j0k",
+      "americas": "/m/0j2v0",
+      "africa": "/m/0dg3n1",
+      "oceania": "/m/05nrg"
+    };
+    if (region !== "any" && regionMap[region]) {
+      url += "&arrival_area_id=" + encodeURIComponent(regionMap[region]);
+    }
 
     console.log("SerpApi URL:", url.replace(SERPAPI_KEY, "***"));
 
