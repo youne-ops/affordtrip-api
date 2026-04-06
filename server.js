@@ -42,10 +42,11 @@ app.all("/api/explore", async function(req, res) {
     var date = req.query.date || (req.body && req.body.date);
     var returnDate = req.query.return || (req.body && req.body.returnDate);
     var currency = req.query.currency || (req.body && req.body.currency) || "GBP";
+    var stops = req.query.stops || (req.body && req.body.stops) || "any";
 
     if (!origin) return res.status(400).json({ error: "Missing origin" });
 
-    var cacheK = "explore-" + origin + "-" + (date || "flex") + "-" + (returnDate || "flex") + "-" + currency;
+    var cacheK = "explore-" + origin + "-" + (date || "flex") + "-" + (returnDate || "flex") + "-" + currency + "-" + stops;
     var cached = getCached(cacheK);
     if (cached) return res.json({ success: true, fromCache: true, total: cached.length, destinations: cached });
 
@@ -59,6 +60,10 @@ app.all("/api/explore", async function(req, res) {
     // Add dates if provided
     if (date) url += "&outbound_date=" + encodeURIComponent(date);
     if (returnDate) url += "&return_date=" + encodeURIComponent(returnDate);
+
+    // Add stops filter: 0=any, 1=nonstop, 2=1 stop or fewer
+    if (stops === "direct") url += "&stops=1";
+    else if (stops === "1stop") url += "&stops=2";
 
     console.log("SerpApi URL:", url.replace(SERPAPI_KEY, "***"));
 
