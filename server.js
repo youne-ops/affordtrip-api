@@ -92,7 +92,12 @@ app.all("/api/explore", async function(req, res) {
 
     console.log("SerpApi URL:", url.replace(SERPAPI_KEY, "***"));
 
-    var serpRes = await fetch(url);
+    // 30 second timeout for SerpApi
+    var controller = new AbortController();
+    var timeout = setTimeout(function(){ controller.abort(); }, 30000);
+
+    var serpRes = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
     var serpData = await serpRes.json();
 
     // Log raw response for debugging
@@ -167,8 +172,12 @@ app.all("/api/explore", async function(req, res) {
     setCache(cacheK, destinations);
     res.json({ success: true, fromCache: false, origin: origin, total: destinations.length, destinations: destinations });
   } catch (err) {
-    console.log("Explore error:", err);
-    res.status(500).json({ error: "Explore failed: " + err.message });
+    console.log("Explore error:", err.name, err.message);
+    if(err.name === "AbortError") {
+      res.status(504).json({ error: "SerpApi timeout — try again", success: false, destinations: [] });
+    } else {
+      res.status(500).json({ error: "Explore failed: " + err.message, success: false, destinations: [] });
+    }
   }
 });
 
@@ -184,11 +193,14 @@ app.get("/api/explore/debug", async function(req, res) {
       + "&hl=en&type=1"
       + "&api_key=" + SERPAPI_KEY;
 
-    var serpRes = await fetch(url);
+    var controller2 = new AbortController();
+    var timeout2 = setTimeout(function(){ controller2.abort(); }, 30000);
+    var serpRes = await fetch(url, { signal: controller2.signal });
+    clearTimeout(timeout2);
     var serpData = await serpRes.json();
     res.json(serpData);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.name==="AbortError"?504:500).json({ error: err.message });
   }
 });
 
