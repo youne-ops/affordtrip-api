@@ -84,7 +84,8 @@ app.all("/api/explore", async function(req, res) {
       "asia": "/m/0j0k",
       "americas": "/m/0j2v0",
       "africa": "/m/0dg3n1",
-      "oceania": "/m/05nrg"
+      "oceania": "/m/05nrg",
+      "morocco": "/m/04wgh"
     };
     if (region !== "any" && regionMap[region]) {
       url += "&arrival_area_id=" + encodeURIComponent(regionMap[region]);
