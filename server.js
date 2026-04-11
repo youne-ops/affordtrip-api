@@ -240,34 +240,59 @@ app.get("/api/image", async function(req, res) {
   } catch (err) { res.status(404).json({ error: "Failed" }); }
 });
 
-// Multiple images from Wikimedia Commons
+// Multiple images from Wikipedia article
 app.get("/api/images", async function(req, res) {
   try {
     var city = req.query.city;
     var count = parseInt(req.query.count) || 4;
     if (!city) return res.status(400).json({ error: "Missing city" });
-    var imgKey = "imgs-" + city + "-" + count;
+    var imgKey = "imgs2-" + city + "-" + count;
     var cached = getCached(imgKey);
     if (cached) return res.json({ success: true, images: cached });
 
-    var url = "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch="
-      + encodeURIComponent(city + " city travel")
-      + "&gsrlimit=" + count
-      + "&gsrnamespace=6&prop=imageinfo&iiprop=url|size&iiurlwidth=800&format=json";
+    // Get images from the Wikipedia article itself (much better quality)
+    var url = "https://en.wikipedia.org/w/api.php?action=query&titles="
+      + encodeURIComponent(city)
+      + "&prop=images&imlimit=20&format=json";
 
     var wikiRes = await fetch(url, { headers: { "User-Agent": "AffordTrip/1.0" } });
     var data = await wikiRes.json();
-    var images = [];
+    var fileNames = [];
     if (data.query && data.query.pages) {
       Object.values(data.query.pages).forEach(function(page) {
-        if (page.imageinfo && page.imageinfo[0]) {
-          var info = page.imageinfo[0];
-          // Skip SVGs, icons, and tiny images
-          if (info.width > 400 && info.height > 200 && !info.url.match(/\.svg$/i)) {
-            images.push(info.thumburl || info.url);
-          }
+        if (page.images) {
+          page.images.forEach(function(img) {
+            var t = img.title.toLowerCase();
+            // Skip logos, icons, flags, maps, SVGs, coat of arms, commons icons
+            if (t.match(/\.svg|flag|logo|icon|coat.of.arms|commons|wikisource|wikidata|map.*\d|symbol|seal|emblem|stub|edit.*button|ambox|question.book|text.document/i)) return;
+            fileNames.push(img.title);
+          });
         }
       });
+    }
+
+    // Now get actual image URLs for the best candidates
+    var images = [];
+    var batch = fileNames.slice(0, Math.min(fileNames.length, 10));
+    if (batch.length > 0) {
+      var imgUrl = "https://en.wikipedia.org/w/api.php?action=query&titles="
+        + batch.map(function(f){ return encodeURIComponent(f); }).join("|")
+        + "&prop=imageinfo&iiprop=url|size|mime&iiurlwidth=800&format=json";
+
+      var imgRes = await fetch(imgUrl, { headers: { "User-Agent": "AffordTrip/1.0" } });
+      var imgData = await imgRes.json();
+      if (imgData.query && imgData.query.pages) {
+        Object.values(imgData.query.pages).forEach(function(page) {
+          if (images.length >= count) return;
+          if (page.imageinfo && page.imageinfo[0]) {
+            var info = page.imageinfo[0];
+            // Only JPEG/PNG photos, skip small images and non-photos
+            if (info.mime && info.mime.match(/jpeg|png/) && info.width > 600 && info.height > 300) {
+              images.push(info.thumburl || info.url);
+            }
+          }
+        });
+      }
     }
     setCache(imgKey, images);
     res.json({ success: true, images: images });
