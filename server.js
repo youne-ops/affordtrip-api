@@ -240,4 +240,40 @@ app.get("/api/image", async function(req, res) {
   } catch (err) { res.status(404).json({ error: "Failed" }); }
 });
 
+// Multiple images from Wikimedia Commons
+app.get("/api/images", async function(req, res) {
+  try {
+    var city = req.query.city;
+    var count = parseInt(req.query.count) || 4;
+    if (!city) return res.status(400).json({ error: "Missing city" });
+    var imgKey = "imgs-" + city + "-" + count;
+    var cached = getCached(imgKey);
+    if (cached) return res.json({ success: true, images: cached });
+
+    var url = "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch="
+      + encodeURIComponent(city + " city travel")
+      + "&gsrlimit=" + count
+      + "&gsrnamespace=6&prop=imageinfo&iiprop=url|size&iiurlwidth=800&format=json";
+
+    var wikiRes = await fetch(url, { headers: { "User-Agent": "AffordTrip/1.0" } });
+    var data = await wikiRes.json();
+    var images = [];
+    if (data.query && data.query.pages) {
+      Object.values(data.query.pages).forEach(function(page) {
+        if (page.imageinfo && page.imageinfo[0]) {
+          var info = page.imageinfo[0];
+          // Skip SVGs, icons, and tiny images
+          if (info.width > 400 && info.height > 200 && !info.url.match(/\.svg$/i)) {
+            images.push(info.thumburl || info.url);
+          }
+        }
+      });
+    }
+    setCache(imgKey, images);
+    res.json({ success: true, images: images });
+  } catch (err) {
+    res.json({ success: true, images: [] });
+  }
+});
+
 app.listen(PORT, function() { console.log("AffordTrip API v4.1.0 on port " + PORT); });
