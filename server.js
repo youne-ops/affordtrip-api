@@ -342,8 +342,8 @@ app.get("/api/images", async function(req, res) {
         if (page.images) {
           page.images.forEach(function(img) {
             var t = img.title.toLowerCase();
-            // Skip logos, icons, flags, maps, SVGs, coat of arms, commons icons
-            if (t.match(/\.svg|flag|logo|icon|coat.of.arms|commons|wikisource|wikidata|map.*\d|symbol|seal|emblem|stub|edit.*button|ambox|question.book|text.document/i)) return;
+            // Skip logos, icons, flags, maps, SVGs, coat of arms, commons icons, portraits
+            if (t.match(/\.svg|flag|logo|icon|coat.of.arms|commons|wikisource|wikidata|map.*\d|symbol|seal|emblem|stub|edit.*button|ambox|question.book|text.document|portrait|mayor|governor|president|minister|official|headshot|mugshot|face|bust|statue.*of/i)) return;
             fileNames.push(img.title);
           });
         }
@@ -365,8 +365,8 @@ app.get("/api/images", async function(req, res) {
           if (images.length >= count) return;
           if (page.imageinfo && page.imageinfo[0]) {
             var info = page.imageinfo[0];
-            // Only JPEG/PNG photos, skip small images and non-photos
-            if (info.mime && info.mime.match(/jpeg|png/) && info.width > 600 && info.height > 300) {
+            // Only JPEG/PNG photos, skip small images, portraits, and non-landscape
+            if (info.mime && info.mime.match(/jpeg|png/) && info.width > 600 && info.height > 300 && info.width > info.height) {
               images.push(info.thumburl || info.url);
             }
           }
