@@ -29,11 +29,102 @@ function setCache(key, data) {
 
 // Health
 app.get("/", function(req, res) {
-  res.json({ status: "ok", version: "4.1.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "5.0.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
 });
 app.get("/health", function(req, res) {
-  res.json({ status: "ok", version: "4.1.0", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "5.0.0", cacheSize: Object.keys(cache).length });
 });
+
+// ── Helper: get week key for aggressive caching (Mon-Sun) ──
+function getWeekKey(dateStr) {
+  var d = dateStr ? new Date(dateStr) : new Date();
+  var day = d.getDay();
+  var diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday
+  var monday = new Date(d.setDate(diff));
+  return monday.toISOString().substring(0, 10);
+}
+
+// ── Helper: parse SerpApi destinations ──
+var skipWords = ["national park", "state park", "resort", "mountain", "volcano", "canyon", "forest", "wilderness", "monument", "memorial", "scenic", "trail"];
+function parseDestinations(serpData, currency) {
+  return (serpData.destinations || []).filter(function(d) {
+    if (!d.name && !d.title) return false;
+    var name = (d.name || d.title || "").toLowerCase();
+    for (var i = 0; i < skipWords.length; i++) {
+      if (name.indexOf(skipWords[i]) >= 0) return false;
+    }
+    return true;
+  }).map(function(d) {
+    var flightPrice = null, airline = null, airlineCode = null;
+    var stops = null, duration = null, depAirport = null, arrAirport = null;
+    if (d.flights && d.flights.length > 0) {
+      var f = d.flights[0];
+      flightPrice = f.price; airline = f.airline; airlineCode = f.airline_code;
+      stops = f.number_of_stops; duration = f.duration;
+      depAirport = f.departure_airport ? f.departure_airport.id : null;
+      arrAirport = f.arrival_airport ? f.arrival_airport.id : null;
+    }
+    if (!flightPrice && d.flight_price) flightPrice = d.flight_price;
+    if (!flightPrice && d.extracted_flight_price) flightPrice = d.extracted_flight_price;
+    if (!flightPrice && d.price) flightPrice = d.price;
+    return {
+      city: d.name || d.title, country: d.country, coordinates: d.gps_coordinates,
+      thumbnail: d.thumbnail, flightPrice: flightPrice, currency: currency,
+      airline: airline, airlineCode: airlineCode, stops: stops, duration: duration,
+      departureAirport: depAirport, arrivalAirport: arrAirport,
+      startDate: d.start_date || null, endDate: d.end_date || null,
+      googleFlightsLink: d.google_flights_link || null, description: d.description || null
+    };
+  });
+}
+
+// ── Helper: fetch one SerpApi region with timeout ──
+function fetchRegion(baseUrl, regionId) {
+  var url = baseUrl + (regionId ? "&arrival_area_id=" + encodeURIComponent(regionId) : "");
+  var controller = new AbortController();
+  var timeout = setTimeout(function(){ controller.abort(); }, 30000);
+  return fetch(url, { signal: controller.signal })
+    .then(function(r) { clearTimeout(timeout); return r.json(); })
+    .catch(function(err) { clearTimeout(timeout); console.log("Region fetch failed:", err.message); return { destinations: [] }; });
+}
+
+// ── Helper: dedup destinations by city name (keep cheapest flight) ──
+function dedup(destinations) {
+  var seen = {};
+  var result = [];
+  destinations.forEach(function(d) {
+    var key = (d.city || "").toLowerCase().trim();
+    if (!key) return;
+    if (seen[key]) {
+      // Keep the one with cheaper flight
+      if (d.flightPrice && (!seen[key].flightPrice || d.flightPrice < seen[key].flightPrice)) {
+        var idx = result.indexOf(seen[key]);
+        if (idx >= 0) result[idx] = d;
+        seen[key] = d;
+      }
+    } else {
+      seen[key] = d;
+      result.push(d);
+    }
+  });
+  return result;
+}
+
+// Region map
+var regionMap = {
+  "europe": "/m/02j9z",
+  "asia": "/m/0j0k",
+  "americas": "/m/0j2v0",
+  "africa": "/m/0dg3n1",
+  "oceania": "/m/05nrg",
+  "morocco": "/m/04wgh"
+};
+
+// US airport region codes
+var usRegions = ["NAM", "CAM", "SAM"];
+
+// Weekly cache — 7 day TTL
+var WEEKLY_TTL = 7 * 24 * 60 * 60 * 1000;
 
 // Main search endpoint
 app.all("/api/explore", async function(req, res) {
@@ -45,130 +136,116 @@ app.all("/api/explore", async function(req, res) {
     var stops = req.query.stops || (req.body && req.body.stops) || "any";
     var vibe = req.query.vibe || (req.body && req.body.vibe) || "any";
     var region = req.query.region || (req.body && req.body.region) || "any";
+    var depRegion = req.query.depRegion || (req.body && req.body.depRegion) || "";
 
     if (!origin) return res.status(400).json({ error: "Missing origin" });
 
+    // ── Aggressive weekly cache for USA multi-region searches ──
+    var isUSA = usRegions.indexOf(depRegion) >= 0;
+    var weekKey = getWeekKey(date);
+    var weeklyCacheK = "weekly-" + origin + "-" + weekKey + "-" + currency + "-" + stops;
+
+    if (isUSA && region === "any") {
+      var weeklyCached = cache[weeklyCacheK];
+      if (weeklyCached && (Date.now() - weeklyCached.time < WEEKLY_TTL)) {
+        console.log("Weekly cache hit:", weeklyCacheK, weeklyCached.data.length, "destinations");
+        return res.json({ success: true, fromCache: true, total: weeklyCached.data.length, destinations: weeklyCached.data });
+      }
+    }
+
+    // ── Standard 6hr cache ──
     var cacheK = "explore-" + origin + "-" + (date || "flex") + "-" + (returnDate || "flex") + "-" + currency + "-" + stops + "-" + vibe + "-" + region;
     var cached = getCached(cacheK);
     if (cached) return res.json({ success: true, fromCache: true, total: cached.length, destinations: cached });
 
-    // Build SerpApi URL — no gl parameter, let Google auto-detect
-    var url = "https://serpapi.com/search.json?engine=google_travel_explore"
+    // Build base SerpApi URL (no region yet)
+    var baseUrl = "https://serpapi.com/search.json?engine=google_travel_explore"
       + "&departure_id=" + encodeURIComponent(origin)
       + "&currency=" + encodeURIComponent(currency)
       + "&hl=en&type=1"
       + "&api_key=" + SERPAPI_KEY;
 
-    // Add dates if provided
-    if (date) url += "&outbound_date=" + encodeURIComponent(date);
-    if (returnDate) url += "&return_date=" + encodeURIComponent(returnDate);
+    if (date) baseUrl += "&outbound_date=" + encodeURIComponent(date);
+    if (returnDate) baseUrl += "&return_date=" + encodeURIComponent(returnDate);
+    if (stops === "direct") baseUrl += "&stops=1";
+    else if (stops === "1stop") baseUrl += "&stops=2";
 
-    // Add stops filter: 0=any, 1=nonstop, 2=1 stop or fewer
-    if (stops === "direct") url += "&stops=1";
-    else if (stops === "1stop") url += "&stops=2";
+    var vibeMap = { "beach": "/m/0b3yr", "outdoors": "/g/11bc58l13w", "culture": "/m/03g3w", "skiing": "/m/071k0" };
+    if (vibe !== "any" && vibeMap[vibe]) baseUrl += "&interest=" + encodeURIComponent(vibeMap[vibe]);
 
-    // Add interest/vibe filter
-    var vibeMap = {
-      "beach": "/m/0b3yr",
-      "outdoors": "/g/11bc58l13w",
-      "culture": "/m/03g3w",
-      "skiing": "/m/071k0"
-    };
-    if (vibe !== "any" && vibeMap[vibe]) {
-      url += "&interest=" + encodeURIComponent(vibeMap[vibe]);
+    // ── USA multi-region search: 3 calls + Morocco = 4 total ──
+    if (isUSA && region === "any") {
+      // Rotate 3rd region: Europe on even days, Asia on odd days
+      var dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
+      var rotatingRegion = (dayOfYear % 2 === 0) ? regionMap["europe"] : regionMap["asia"];
+      var rotatingLabel = (dayOfYear % 2 === 0) ? "europe" : "asia";
+
+      console.log("USA multi-region search from", origin, "| rotating:", rotatingLabel);
+
+      var calls = [
+        fetchRegion(baseUrl, null),                    // No filter (nearby/popular)
+        fetchRegion(baseUrl, regionMap["americas"]),    // Americas
+        fetchRegion(baseUrl, rotatingRegion),           // Europe or Asia (rotating)
+        fetchRegion(baseUrl, regionMap["morocco"])      // Morocco
+      ];
+
+      var results = await Promise.all(calls);
+      var allDests = [];
+      results.forEach(function(serpData, i) {
+        var label = ["no-filter", "americas", rotatingLabel, "morocco"][i];
+        var parsed = parseDestinations(serpData, currency);
+        console.log("  " + label + ":", parsed.length, "destinations");
+        allDests = allDests.concat(parsed);
+      });
+
+      var destinations = dedup(allDests);
+      console.log("USA total after dedup:", destinations.length);
+
+      // Save to both weekly cache and standard cache
+      cache[weeklyCacheK] = { data: destinations, time: Date.now() };
+      setCache(cacheK, destinations);
+
+      return res.json({ success: true, fromCache: false, origin: origin, total: destinations.length, destinations: destinations });
     }
 
-    // Add region filter
-    var regionMap = {
-      "europe": "/m/02j9z",
-      "asia": "/m/0j0k",
-      "americas": "/m/0j2v0",
-      "africa": "/m/0dg3n1",
-      "oceania": "/m/05nrg",
-      "morocco": "/m/04wgh"
-    };
-    if (region !== "any" && regionMap[region]) {
-      url += "&arrival_area_id=" + encodeURIComponent(regionMap[region]);
+    // ── Standard search (non-USA or specific region requested) ──
+    // When region is "any", also fetch Morocco in parallel
+    if (region === "any") {
+      console.log("Standard + Morocco search from", origin);
+      var calls = [
+        fetchRegion(baseUrl, null),
+        fetchRegion(baseUrl, regionMap["morocco"])
+      ];
+      var results = await Promise.all(calls);
+      var allDests = [];
+      results.forEach(function(serpData) {
+        allDests = allDests.concat(parseDestinations(serpData, currency));
+      });
+      var destinations = dedup(allDests);
+      console.log("Standard total after dedup:", destinations.length);
+      setCache(cacheK, destinations);
+      return res.json({ success: true, fromCache: false, origin: origin, total: destinations.length, destinations: destinations });
     }
 
-    console.log("SerpApi URL:", url.replace(SERPAPI_KEY, "***"));
+    // Specific region requested
+    if (regionMap[region]) {
+      baseUrl += "&arrival_area_id=" + encodeURIComponent(regionMap[region]);
+    }
 
-    // 30 second timeout for SerpApi
+    console.log("SerpApi URL:", baseUrl.replace(SERPAPI_KEY, "***"));
+
     var controller = new AbortController();
     var timeout = setTimeout(function(){ controller.abort(); }, 30000);
-
-    var serpRes = await fetch(url, { signal: controller.signal });
+    var serpRes = await fetch(baseUrl, { signal: controller.signal });
     clearTimeout(timeout);
     var serpData = await serpRes.json();
 
-    // Log raw response for debugging
-    console.log("SerpApi response keys:", Object.keys(serpData));
-    console.log("Destinations count:", serpData.destinations ? serpData.destinations.length : 0);
-    if (serpData.destinations && serpData.destinations[0]) {
-      console.log("First destination:", JSON.stringify(serpData.destinations[0]).substring(0, 500));
-    }
     if (serpData.error) {
       console.log("SerpApi error:", serpData.error);
       return res.status(502).json({ error: "SerpApi error: " + serpData.error });
     }
 
-    // Parse destinations
-    var skipWords = ["national park", "state park", "resort", "mountain", "volcano", "canyon", "forest", "wilderness", "monument", "memorial", "scenic", "trail"];
-    var destinations = (serpData.destinations || []).filter(function(d) {
-      // Skip destinations without a name
-      if (!d.name && !d.title) return false;
-      var name = (d.name || d.title || "").toLowerCase();
-      // Skip non-city destinations (parks, resorts, etc.)
-      for (var i = 0; i < skipWords.length; i++) {
-        if (name.indexOf(skipWords[i]) >= 0) return false;
-      }
-      return true;
-    }).map(function(d) {
-      // Flight price might be at different levels depending on the API response
-      var flightPrice = null;
-      var airline = null;
-      var airlineCode = null;
-      var stops = null;
-      var duration = null;
-      var depAirport = null;
-      var arrAirport = null;
-
-      // Check if flights array exists and has data
-      if (d.flights && d.flights.length > 0) {
-        var f = d.flights[0];
-        flightPrice = f.price;
-        airline = f.airline;
-        airlineCode = f.airline_code;
-        stops = f.number_of_stops;
-        duration = f.duration;
-        depAirport = f.departure_airport ? f.departure_airport.id : null;
-        arrAirport = f.arrival_airport ? f.arrival_airport.id : null;
-      }
-
-      // Also check for price at destination level (some responses have it here)
-      if (!flightPrice && d.flight_price) flightPrice = d.flight_price;
-      if (!flightPrice && d.extracted_flight_price) flightPrice = d.extracted_flight_price;
-      if (!flightPrice && d.price) flightPrice = d.price;
-
-      return {
-        city: d.name || d.title,
-        country: d.country,
-        coordinates: d.gps_coordinates,
-        thumbnail: d.thumbnail,
-        flightPrice: flightPrice,
-        currency: currency,
-        airline: airline,
-        airlineCode: airlineCode,
-        stops: stops,
-        duration: duration,
-        departureAirport: depAirport,
-        arrivalAirport: arrAirport,
-        startDate: d.start_date || null,
-        endDate: d.end_date || null,
-        googleFlightsLink: d.google_flights_link || null,
-        description: d.description || null
-      };
-    });
+    var destinations = parseDestinations(serpData, currency);
 
     setCache(cacheK, destinations);
     res.json({ success: true, fromCache: false, origin: origin, total: destinations.length, destinations: destinations });
@@ -301,4 +378,4 @@ app.get("/api/images", async function(req, res) {
   }
 });
 
-app.listen(PORT, function() { console.log("AffordTrip API v4.1.0 on port " + PORT); });
+app.listen(PORT, function() { console.log("AffordTrip API v5.0.0 on port " + PORT); });
