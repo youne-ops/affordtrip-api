@@ -29,10 +29,10 @@ function setCache(key, data) {
 
 // Health
 app.get("/", function(req, res) {
-  res.json({ status: "ok", version: "5.0.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "5.1.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
 });
 app.get("/health", function(req, res) {
-  res.json({ status: "ok", version: "5.0.0", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "5.1.0", cacheSize: Object.keys(cache).length });
 });
 
 // ── Helper: get week key for aggressive caching (Mon-Sun) ──
@@ -115,6 +115,7 @@ var regionMap = {
   "europe": "/m/02j9z",
   "asia": "/m/0j0k",
   "americas": "/m/0j2v0",
+  "south_america": "/m/06n3y",
   "africa": "/m/0dg3n1",
   "oceania": "/m/05nrg",
   "morocco": "/m/04wgh"
@@ -173,9 +174,9 @@ app.all("/api/explore", async function(req, res) {
     var vibeMap = { "beach": "/m/0b3yr", "outdoors": "/g/11bc58l13w", "culture": "/m/03g3w", "skiing": "/m/071k0" };
     if (vibe !== "any" && vibeMap[vibe]) baseUrl += "&interest=" + encodeURIComponent(vibeMap[vibe]);
 
-    // ── USA multi-region search: 3 calls + Morocco = 4 total ──
+    // ── USA multi-region search: 4 calls + Morocco = 5 total ──
     if (isUSA && region === "any") {
-      // Rotate 3rd region: Europe on even days, Asia on odd days
+      // Rotate 4th region: Europe on even days, Asia on odd days
       var dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
       var rotatingRegion = (dayOfYear % 2 === 0) ? regionMap["europe"] : regionMap["asia"];
       var rotatingLabel = (dayOfYear % 2 === 0) ? "europe" : "asia";
@@ -183,16 +184,17 @@ app.all("/api/explore", async function(req, res) {
       console.log("USA multi-region search from", origin, "| rotating:", rotatingLabel);
 
       var calls = [
-        fetchRegion(baseUrl, null),                    // No filter (nearby/popular)
-        fetchRegion(baseUrl, regionMap["americas"]),    // Americas
-        fetchRegion(baseUrl, rotatingRegion),           // Europe or Asia (rotating)
-        fetchRegion(baseUrl, regionMap["morocco"])      // Morocco
+        fetchRegion(baseUrl, null),                         // No filter (nearby/popular)
+        fetchRegion(baseUrl, regionMap["americas"]),         // Americas (North + Central + Caribbean)
+        fetchRegion(baseUrl, regionMap["south_america"]),    // South America specifically
+        fetchRegion(baseUrl, rotatingRegion),                // Europe or Asia (rotating)
+        fetchRegion(baseUrl, regionMap["morocco"])           // Morocco
       ];
 
       var results = await Promise.all(calls);
       var allDests = [];
       results.forEach(function(serpData, i) {
-        var label = ["no-filter", "americas", rotatingLabel, "morocco"][i];
+        var label = ["no-filter", "americas", "south_america", rotatingLabel, "morocco"][i];
         var parsed = parseDestinations(serpData, currency);
         console.log("  " + label + ":", parsed.length, "destinations");
         allDests = allDests.concat(parsed);
@@ -378,4 +380,4 @@ app.get("/api/images", async function(req, res) {
   }
 });
 
-app.listen(PORT, function() { console.log("AffordTrip API v5.0.0 on port " + PORT); });
+app.listen(PORT, function() { console.log("AffordTrip API v5.1.0 on port " + PORT); });
