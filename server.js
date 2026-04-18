@@ -58,7 +58,14 @@ function parseDestinations(serpData, currency) {
     var flightPrice = null, airline = null, airlineCode = null;
     var stops = null, duration = null, depAirport = null, arrAirport = null;
     if (d.flights && d.flights.length > 0) {
-      var f = d.flights[0];
+      // Find cheapest flight
+      var cheapest = d.flights[0];
+      for (var j = 1; j < d.flights.length; j++) {
+        if (d.flights[j].price && (!cheapest.price || d.flights[j].price < cheapest.price)) {
+          cheapest = d.flights[j];
+        }
+      }
+      var f = cheapest;
       flightPrice = f.price; airline = f.airline; airlineCode = f.airline_code;
       stops = f.number_of_stops; duration = f.duration;
       depAirport = f.departure_airport ? f.departure_airport.id : null;
