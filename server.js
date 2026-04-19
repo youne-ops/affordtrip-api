@@ -10,7 +10,7 @@ const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 // Cache — 6 hour TTL
 const cache = {};
-const CACHE_TTL = 6 * 60 * 60 * 1000;
+const CACHE_TTL = 3 * 60 * 60 * 1000;
 
 function getCached(key) {
   var entry = cache[key];
@@ -29,10 +29,10 @@ function setCache(key, data) {
 
 // Health
 app.get("/", function(req, res) {
-  res.json({ status: "ok", version: "5.1.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "5.2.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
 });
 app.get("/health", function(req, res) {
-  res.json({ status: "ok", version: "5.1.0", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "5.2.0", cacheSize: Object.keys(cache).length });
 });
 
 // ── Helper: get week key for aggressive caching (Mon-Sun) ──
@@ -132,7 +132,7 @@ var regionMap = {
 var usRegions = ["NAM", "CAM", "SAM"];
 
 // Weekly cache — 7 day TTL
-var WEEKLY_TTL = 7 * 24 * 60 * 60 * 1000;
+var WEEKLY_TTL = 3 * 60 * 60 * 1000;
 
 // Main search endpoint
 app.all("/api/explore", async function(req, res) {
@@ -387,4 +387,4 @@ app.get("/api/images", async function(req, res) {
   }
 });
 
-app.listen(PORT, function() { console.log("AffordTrip API v5.1.0 on port " + PORT); });
+app.listen(PORT, function() { console.log("AffordTrip API v5.2.0 on port " + PORT); });
