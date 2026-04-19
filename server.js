@@ -29,10 +29,10 @@ function setCache(key, data) {
 
 // Health
 app.get("/", function(req, res) {
-  res.json({ status: "ok", version: "5.2.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "5.3.0", engine: "serpapi", cacheSize: Object.keys(cache).length });
 });
 app.get("/health", function(req, res) {
-  res.json({ status: "ok", version: "5.2.0", cacheSize: Object.keys(cache).length });
+  res.json({ status: "ok", version: "5.3.0", cacheSize: Object.keys(cache).length });
 });
 
 // ── Helper: get week key for aggressive caching (Mon-Sun) ──
@@ -131,6 +131,9 @@ var regionMap = {
 // US airport region codes
 var usRegions = ["NAM", "CAM", "SAM"];
 
+// European airport region codes
+var euRegions = ["WEU", "EEU"];
+
 // Weekly cache — 7 day TTL
 var WEEKLY_TTL = 3 * 60 * 60 * 1000;
 
@@ -148,12 +151,13 @@ app.all("/api/explore", async function(req, res) {
 
     if (!origin) return res.status(400).json({ error: "Missing origin" });
 
-    // ── Aggressive weekly cache for USA multi-region searches ──
+    // ── Aggressive weekly cache for multi-region searches ──
     var isUSA = usRegions.indexOf(depRegion) >= 0;
+    var isEU = euRegions.indexOf(depRegion) >= 0;
     var weekKey = getWeekKey(date);
     var weeklyCacheK = "weekly-" + origin + "-" + weekKey + "-" + currency + "-" + stops;
 
-    if (isUSA && region === "any") {
+    if ((isUSA || isEU) && region === "any") {
       var weeklyCached = cache[weeklyCacheK];
       if (weeklyCached && (Date.now() - weeklyCached.time < WEEKLY_TTL)) {
         console.log("Weekly cache hit:", weeklyCacheK, weeklyCached.data.length, "destinations");
@@ -217,7 +221,38 @@ app.all("/api/explore", async function(req, res) {
       return res.json({ success: true, fromCache: false, origin: origin, total: destinations.length, destinations: destinations });
     }
 
-    // ── Standard search (non-USA or specific region requested) ──
+    // ── EU multi-region search: no-filter + Asia + Americas + South America + Morocco ──
+    if (isEU && region === "any") {
+      console.log("EU multi-region search from", origin);
+
+      var calls = [
+        fetchRegion(baseUrl, null),                         // No filter (local/nearby — mostly Europe)
+        fetchRegion(baseUrl, regionMap["asia"]),             // Asia
+        fetchRegion(baseUrl, regionMap["americas"]),         // Americas (North + Central + Caribbean)
+        fetchRegion(baseUrl, regionMap["south_america"]),    // South America
+        fetchRegion(baseUrl, regionMap["morocco"])           // Morocco
+      ];
+
+      var results = await Promise.all(calls);
+      var allDests = [];
+      results.forEach(function(serpData, i) {
+        var label = ["no-filter", "asia", "americas", "south_america", "morocco"][i];
+        var parsed = parseDestinations(serpData, currency);
+        console.log("  " + label + ":", parsed.length, "destinations");
+        allDests = allDests.concat(parsed);
+      });
+
+      var destinations = dedup(allDests);
+      console.log("EU total after dedup:", destinations.length);
+
+      // Save to both weekly cache and standard cache
+      cache[weeklyCacheK] = { data: destinations, time: Date.now() };
+      setCache(cacheK, destinations);
+
+      return res.json({ success: true, fromCache: false, origin: origin, total: destinations.length, destinations: destinations });
+    }
+
+    // ── Standard search (non-USA/non-EU or specific region requested) ──
     // When region is "any", also fetch Morocco in parallel
     if (region === "any") {
       console.log("Standard + Morocco search from", origin);
@@ -387,4 +422,4 @@ app.get("/api/images", async function(req, res) {
   }
 });
 
-app.listen(PORT, function() { console.log("AffordTrip API v5.2.0 on port " + PORT); });
+app.listen(PORT, function() { console.log("AffordTrip API v5.3.0 on port " + PORT); });
